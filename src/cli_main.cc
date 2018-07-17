@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include "./common/sync.h"
 #include "./common/config.h"
 
@@ -244,6 +246,10 @@ void CLITrain(const CLIParam& param) {
     version += 1;
     CHECK_EQ(version, rabit::VersionNumber());
   }
+  struct rusage usage;
+  getrusage(RUSAGE_SELF, &usage);
+  long max_rss = usage.ru_maxrss / 1000;
+  LOG(TRACKER) << JsonLog(rabit::GetRank(), "RSS-MB", max_rss);
   // always save final round
   if ((param.save_period == 0 || param.num_round % param.save_period != 0) &&
       param.model_out != "NONE" &&

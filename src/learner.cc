@@ -354,21 +354,32 @@ class LearnerImpl : public Learner {
   }
 
   void UpdateOneIter(int iter, DMatrix* train) override {
+    int rank = rabit::GetRank();
     monitor_.Start("UpdateOneIter");
     CHECK(ModelInitialized())
         << "Always call InitModel or LoadModel before update";
     if (tparam_.seed_per_iteration || rabit::IsDistributed()) {
       common::GlobalRandom().seed(tparam_.seed * kRandSeedMagic + iter);
     }
+    monitor_.Start("InitDMatrix");
     this->LazyInitDMatrix(train);
+    monitor_.Stop("InitDMatrix");
     monitor_.Start("PredictRaw");
     this->PredictRaw(train, &preds_);
     monitor_.Stop("PredictRaw");
     monitor_.Start("GetGradient");
     obj_->GetGradient(&preds_, train->Info(), iter, &gpair_);
     monitor_.Stop("GetGradient");
+    monitor_.Start("DoBoost");
     gbm_->DoBoost(train, &gpair_, obj_.get());
+    monitor_.Stop("DoBoost");
     monitor_.Stop("UpdateOneIter");
+//    LOG(TRACKER) << JsonLog(rank, "init-dmatrix-time", monitor_.timer_map["InitDMatrix"].ElapsedSeconds());
+    LOG(TRACKER) << JsonLog(rank, "PredictRaw", monitor_.timer_map["PredictRaw"].ElapsedSeconds());
+    LOG(TRACKER) << JsonLog(rank, "GetGradient", monitor_.timer_map["GetGradient"].ElapsedSeconds());
+    LOG(TRACKER) << JsonLog(rank, "DoBoost", monitor_.timer_map["DoBoost"].ElapsedSeconds());
+    LOG(TRACKER) << JsonLog(rank, "UpdateOneIter", monitor_.timer_map["UpdateOneIter"].ElapsedSeconds());
+    monitor_.ResetAll();
   }
 
   void BoostOneIter(int iter, DMatrix* train,
@@ -458,6 +469,7 @@ class LearnerImpl : public Learner {
         obj_->PredTransform(out_preds);
       }
     }
+    // Testing
   }
 
  protected:

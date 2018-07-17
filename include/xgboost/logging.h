@@ -37,6 +37,8 @@ class TrackerLogger : public BaseLogger {
   ~TrackerLogger();
 };
 
+std::string JsonLog(int rank, std::string metric, double value);
+
 // redefines the logging macro if not existed
 #ifndef LOG
 #define LOG(severity) LOG_##severity.stream()

@@ -199,7 +199,7 @@ class BaseMaker: public TreeUpdater {
                                const RegTree &tree) {
     // set the positions in the nondefault
     this->SetNonDefaultPositionCol(nodes, p_fmat, tree);
-    this->SetDefaultPostion(p_fmat, tree);
+    this->SetDefaultPosition(p_fmat, tree);
   }
   /*!
    * \brief helper function to set the non-leaf positions to default direction.
@@ -207,8 +207,8 @@ class BaseMaker: public TreeUpdater {
    * \param p_fmat feature matrix needed for tree construction
    * \param tree the regression tree structure
    */
-  inline void SetDefaultPostion(DMatrix *p_fmat,
-                                const RegTree &tree) {
+  inline void SetDefaultPosition(DMatrix *p_fmat,
+                                 const RegTree &tree) {
     // set rest of instances to default position
     const RowSet &rowset = p_fmat->BufferedRowset();
     // set default direct nodes to default

@@ -8,10 +8,13 @@
 #include <xgboost/tree_updater.h>
 #include <vector>
 #include <algorithm>
+#include "dmlc/timer.h"
+#include "../common/timer.h"
 #include "../common/sync.h"
 #include "../common/quantile.h"
 #include "../common/group_data.h"
 #include "./updater_basemaker-inl.h"
+
 
 namespace xgboost {
 namespace tree {
@@ -35,7 +38,9 @@ class HistMaker: public BaseMaker {
     param_.learning_rate = lr;
   }
 
- protected:
+protected:
+  common::Monitor monitor_;
+
   /*! \brief a single histogram */
   struct HistUnit {
     /*! \brief cutting point of histogram, contains maximum point */
@@ -49,7 +54,7 @@ class HistMaker: public BaseMaker {
     // constructor
     HistUnit(const bst_float *cut, TStats *data, unsigned size)
         : cut(cut), data(data), size(size) {}
-    /*! \brief add a histogram to data */
+    /*! \brief add a histogram to data */ // tvas: Shouldn't this be add GradientPair to histogram?
     inline void Add(bst_float fv,
                     const std::vector<GradientPair> &gpair,
                     const MetaInfo &info,
@@ -131,20 +136,43 @@ class HistMaker: public BaseMaker {
     for (int i = 0; i < p_tree->param.num_roots; ++i) {
       (*p_tree)[i].SetLeaf(0.0f, 0);
     }
-
+    int rank = rabit::GetRank();
     for (int depth = 0; depth < param_.max_depth; ++depth) {
       // reset and propose candidate split
+      monitor_.Start("ResetPosAndPropose");
       this->ResetPosAndPropose(gpair, p_fmat, fwork_set_, *p_tree);
+      monitor_.Stop("ResetPosAndPropose");
       // create histogram
+      monitor_.Start("CreateHist");
       this->CreateHist(gpair, p_fmat, fwork_set_, *p_tree);
+      monitor_.Stop("CreateHist");
       // find split based on histogram statistics
+      monitor_.Start("FindSplit");
       this->FindSplit(depth, gpair, p_fmat, fwork_set_, p_tree);
+      monitor_.Stop("FindSplit");
       // reset position after split
+      monitor_.Start("ResetPositionAfterSplit");
       this->ResetPositionAfterSplit(p_fmat, *p_tree);
+      monitor_.Stop("ResetPositionAfterSplit");
+      // UpdateQueueExpand
+      monitor_.Start("UpdateQueueExpand");
       this->UpdateQueueExpand(*p_tree);
+      monitor_.Stop("UpdateQueueExpand");
       // if nothing left to be expand, break
       if (qexpand_.size() == 0) break;
     }
+//    LOG(TRACKER) << JsonLog(rank, "ResetPosAndPropose", monitor_.timer_map["ResetPosAndPropose"].ElapsedSeconds());
+//    LOG(TRACKER) << JsonLog(rank, "CreateHist-UpdateHistCol", monitor_.timer_map["CreateHist-UpdateHistCol"].ElapsedSeconds());
+//    LOG(TRACKER) << JsonLog(rank, "CreateHist-UpdateNodeStats", monitor_.timer_map["CreateHist-UpdateNodeStats"].ElapsedSeconds());
+    LOG(TRACKER) << JsonLog(rank, "CreateHist-WorkBlock", monitor_.timer_map["CreateHist-WorkBlock"].ElapsedSeconds());
+    LOG(TRACKER) << JsonLog(rank, "CreateHist-AllReduce", monitor_.timer_map["CreateHist-AllReduce"].ElapsedSeconds());
+//    LOG(TRACKER) << JsonLog(rank, "CreateHist", monitor_.timer_map["CreateHist"].ElapsedSeconds());
+    monitor_.Reset("CreateHist-WorkBlock");
+    monitor_.Reset("CreateHist-AllReduce");
+    monitor_.Reset("CreateHist");
+//    LOG(TRACKER) << JsonLog(rank, "FindSplit", monitor_.timer_map["FindSplit"].ElapsedSeconds());
+//    LOG(TRACKER) << JsonLog(rank, "ResetPositionAfterSplit", monitor_.timer_map["ResetPositionAfterSplit"].ElapsedSeconds());
+//    LOG(TRACKER) << JsonLog(rank, "UpdateQueueExpand", monitor_.timer_map["UpdateQueueExpand"].ElapsedSeconds());
     for (size_t i = 0; i < qexpand_.size(); ++i) {
       const int nid = qexpand_[i];
       (*p_tree)[nid].SetLeaf(p_tree->Stat(nid).base_weight * param_.learning_rate);
@@ -407,7 +435,7 @@ class CQHistMaker: public HistMaker<TStats> {
     for (size_t i = 0; i < sketchs_.size(); ++i) {
       sketchs_[i].Init(info.num_row_, this->param_.sketch_eps);
     }
-    // intitialize the summary array
+    // initialize the summary array
     summary_array_.resize(sketchs_.size());
     // setup maximum size
     unsigned max_size = this->param_.MaxSketchSize();
@@ -415,11 +443,11 @@ class CQHistMaker: public HistMaker<TStats> {
       summary_array_[i].Reserve(max_size);
     }
     {
-      // get smmary
+      // get summary
       thread_sketch_.resize(omp_get_max_threads());
 
       // TWOPASS: use the real set + split set in the column iteration.
-      this->SetDefaultPostion(p_fmat, tree);
+      this->SetDefaultPosition(p_fmat, tree);
       work_set_.insert(work_set_.end(), fsplit_set_.begin(), fsplit_set_.end());
       std::sort(work_set_.begin(), work_set_.end());
       work_set_.resize(std::unique(work_set_.begin(), work_set_.end()) - work_set_.begin());
@@ -453,7 +481,11 @@ class CQHistMaker: public HistMaker<TStats> {
     }
     if (summary_array_.size() != 0) {
       size_t nbytes = WXQSketch::SummaryContainer::CalcMemCost(max_size);
+      double tStart = dmlc::GetTime();
       sreducer_.Allreduce(dmlc::BeginPtr(summary_array_), nbytes, summary_array_.size());
+
+      double elapsed = dmlc::GetTime() - tStart;
+//      LOG(TRACKER) << JsonLog(rabit::GetRank(), "reset-propose-comm-time", elapsed);
     }
     // now we get the final result of sketch, setup the cut
     this->wspace_.cut.clear();
@@ -501,7 +533,7 @@ class CQHistMaker: public HistMaker<TStats> {
                             bst_uint fid_offset,
                             std::vector<HistEntry> *p_temp) {
     if (c.length == 0) return;
-    // initialize sbuilder for use
+    // initialize hbuilder for use
     std::vector<HistEntry> &hbuilder = *p_temp;
     hbuilder.resize(tree.param.num_nodes);
     for (size_t i = 0; i < this->qexpand_.size(); ++i) {
@@ -700,11 +732,12 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
     // start to work
     this->wspace_.Init(this->param_, 1);
     // to gain speedup in recovery
+    this->monitor_.Start("CreateHist-WorkBlock");
     {
       this->thread_hist_.resize(omp_get_max_threads());
 
       // TWOPASS: use the real set + split set in the column iteration.
-      this->SetDefaultPostion(p_fmat, tree);
+      this->SetDefaultPosition(p_fmat, tree);
       this->work_set_.insert(this->work_set_.end(), this->fsplit_set_.begin(),
                              this->fsplit_set_.end());
       std::sort(this->work_set_.begin(), this->work_set_.end());
@@ -714,25 +747,32 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
       // start accumulating statistics
       dmlc::DataIter<ColBatch> *iter = p_fmat->ColIterator(this->work_set_);
       iter->BeforeFirst();
+      this->monitor_.Start("CreateHist-UpdateHistCol");
       while (iter->Next()) {
+
         const ColBatch &batch = iter->Value();
         // TWOPASS: use the real set + split set in the column iteration.
         this->CorrectNonDefaultPositionByBatch(batch, this->fsplit_set_, tree);
 
         // start enumeration
         const auto nsize = static_cast<bst_omp_uint>(batch.size);
-        #pragma omp parallel for schedule(dynamic, 1)
+
+        #pragma omp parallel for schedule(dynamic, 1) // tvas: Why the choice of dynamic here? Benchmark against static?
         for (bst_omp_uint i = 0; i < nsize; ++i) {
           int offset = this->feat2workindex_[batch.col_index[i]];
           if (offset >= 0) {
+
             this->UpdateHistCol(gpair, batch[i], info, tree,
                                 fset, offset,
                                 &this->thread_hist_[omp_get_thread_num()]);
+
           }
         }
-      }
 
-      // update node statistics.
+      }
+      this->monitor_.Stop("CreateHist-UpdateHistCol");
+      // update node statistics
+      this->monitor_.Start("CreateHist-UpdateNodeStats");
       this->GetNodeStats(gpair, *p_fmat, tree,
                          &(this->thread_stats_), &(this->node_stats_));
       for (size_t i = 0; i < this->qexpand_.size(); ++i) {
@@ -741,9 +781,17 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
         this->wspace_.hset[0][fset.size() + wid * (fset.size()+1)]
             .data[0] = this->node_stats_[nid];
       }
+      this->monitor_.Stop("CreateHist-UpdateNodeStats");
     }
-    this->histred_.Allreduce(dmlc::BeginPtr(this->wspace_.hset[0].data),
-                            this->wspace_.hset[0].data.size());
+    this->monitor_.Stop("CreateHist-WorkBlock");
+    // Sync point
+    this->monitor_.Start("CreateHist-AllReduce");
+    auto begin_pointer = dmlc::BeginPtr(this->wspace_.hset[0].data);
+    size_t num_items = this->wspace_.hset[0].data.size();
+    this->histred_.Allreduce(begin_pointer, num_items);
+    LOG(TRACKER) << JsonLog(rabit::GetRank(), "AllReduceSizeMB",
+        sizeof(*begin_pointer) * static_cast<double>(num_items )/ (1024*1024));
+    this->monitor_.Stop("CreateHist-AllReduce");
   }
 
   // cached unit pointer

@@ -20,4 +20,10 @@ TrackerLogger::~TrackerLogger() {
   rabit::TrackerPrint(log_stream_.str());
 }
 #endif
+
+std::string JsonLog(int rank, std::string metric, double value) {
+  std::ostringstream os;
+  os << "JSON {\"rank\": " << rank << ", \"metric\": \"" << metric << "\", \"value\": " << value << "}";
+  return os.str();
+}
 }  // namespace xgboost

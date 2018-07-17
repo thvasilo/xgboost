@@ -85,6 +85,14 @@ struct Monitor {
     }
     timer_map[name].Stop();
   }
+  /** \brief Resets the provided timer **/
+  void Reset(const std::string &name) { timer_map[name].Reset(); }
+  /** \brief Resets all timers **/
+  void ResetAll() {
+    for (auto &item: timer_map) {
+      item.second.Reset();
+    }
+  }
 };
 }  // namespace common
 }  // namespace xgboost
