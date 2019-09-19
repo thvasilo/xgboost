@@ -1,3 +1,5 @@
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "openmp-use-default-none"
 /*!
  * Copyright 2017-2019 by Contributors
  * \file updater_quantile_hist.cc
@@ -613,6 +615,18 @@ void QuantileHistMaker::Builder::SyncHistograms(
     }
 
     for (auto elem : nodes) {
+      size_t non_zero_grad = 0;
+      size_t non_zero_hess = 0;
+      for (const auto &grad_val : hist_[elem.nid]) {
+        if (grad_val.sum_grad > 0) {
+          non_zero_grad++;
+        }
+        if (grad_val.sum_hess > 0) {
+          non_zero_hess++;
+        }
+      }
+      LOG(INFO) << "Non-zero grad vals: " << non_zero_grad << "/" << hist_builder_.GetNumBins();
+      LOG(INFO) << "Non-zero hess vals: " << non_zero_hess << "/" << hist_builder_.GetNumBins();
       this->histred_.Allreduce(hist_[elem.nid].data(), hist_builder_.GetNumBins());
     }
 
@@ -1278,3 +1292,5 @@ XGBOOST_REGISTER_TREE_UPDATER(QuantileHistMaker, "grow_quantile_histmaker")
 
 }  // namespace tree
 }  // namespace xgboost
+
+#pragma clang diagnostic pop

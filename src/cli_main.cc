@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <mpi.h>
 #include "./common/common.h"
 #include "./common/config.h"
 
@@ -338,6 +339,7 @@ int CLIRunTask(int argc, char *argv[]) {
     printf("Usage: <config>\n");
     return 0;
   }
+  MPI_Init(&argc, &argv);
   rabit::Init(argc, argv);
 
   common::ConfigParser cp(argv[1]);
@@ -359,6 +361,7 @@ int CLIRunTask(int argc, char *argv[]) {
     case kPredict: CLIPredict(param); break;
   }
   rabit::Finalize();
+  MPI_Finalize();
   return 0;
 }
 }  // namespace xgboost

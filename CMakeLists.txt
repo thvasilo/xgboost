@@ -86,6 +86,15 @@ set_target_properties(dmlc PROPERTIES
   POSITION_INDEPENDENT_CODE ON)
 list(APPEND LINKED_LIBRARIES_PRIVATE dmlc)
 
+# mpi
+find_package(MPI REQUIRED)
+if (MPI_FOUND)
+  include_directories(SYSTEM ${MPI_CXX_INCLUDE_PATH})
+else (MPI_FOUND)
+  message(SEND_ERROR "This application cannot compile without MPI")
+endif (MPI_FOUND)
+list(APPEND LINKED_LIBRARIES_PRIVATE ${MPI_CXX_LIBRARIES})
+
 # rabit
 # full rabit doesn't build on windows, so we can't import it as subdirectory
 if(MINGW OR R_LIB)
@@ -143,6 +152,7 @@ if (USE_OPENMP)
 endif (USE_OPENMP)
 target_include_directories(runxgboost
   PRIVATE
+  ${MPI_CXX_INCLUDE_PATH}
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/dmlc-core/include
   ${PROJECT_SOURCE_DIR}/rabit/include)
