@@ -17,6 +17,12 @@
 #include "../common/group_data.h"
 #include "./updater_basemaker-inl.h"
 
+#ifdef __JETBRAINS_IDE__
+// Stuff that only clion will see goes here
+  #define SPARSE_COMMUNICATION
+#endif
+
+
 namespace xgboost {
 namespace tree {
 
@@ -727,6 +733,8 @@ class GlobalProposalHistMaker: public CQHistMaker {
             .data[0] = this->node_stats_[nid];
       }
     }
+#ifdef SPARSE_COMMUNICATION
+    LOG(INFO) << "Using sparse communication";
     // tvas: For now let's try creating two sparse vectors, one for grads one for hess. We could concat the two later
     size_t non_zero_grad_cnt = 0;
     size_t non_zero_hess_cnt = 0;
@@ -757,9 +765,9 @@ class GlobalProposalHistMaker: public CQHistMaker {
       wspace_.hset[0].data[i].sum_grad = 0;
     }
     // Allreduce the number of non-zero elements per worker
-    std::vector<uint32_t > values_per_worker(mpi_size);
-    values_per_worker[mpi_rank] = non_zero_grad_cnt;
-    rabit::Allreduce<rabit::op::Sum>(dmlc::BeginPtr(values_per_worker), mpi_size);
+//    std::vector<uint32_t > values_per_worker(mpi_size);
+//    values_per_worker[mpi_rank] = non_zero_grad_cnt;
+//    rabit::Allreduce<rabit::op::Sum>(dmlc::BeginPtr(values_per_worker), mpi_size);
 //    LOG(TRACKER) << "values_per_worker: " << values_per_worker;
     // Gather the gradient offsets and values from each worker
     std::vector<uint32_t > grad_offsets = mxx::allgatherv(nonzero_grad_idx.data(), non_zero_grad_cnt);
@@ -778,62 +786,60 @@ class GlobalProposalHistMaker: public CQHistMaker {
     size_t max_index = grad_offsets.size() > hess_offsets.size() ? grad_offsets.size() : hess_offsets.size();
     for (size_t nnz_idx = 0; nnz_idx < max_index; ++nnz_idx) {
       if (nnz_idx < grad_offsets.size()) {
-        gradient_accumulation[grad_offsets[nnz_idx]] += grad_values[nnz_idx];
+//        gradient_accumulation[grad_offsets[nnz_idx]] += grad_values[nnz_idx];
         this->wspace_.hset[0].data[grad_offsets[nnz_idx]].Add(grad_values[nnz_idx], 0);
       }
       if (nnz_idx < hess_offsets.size()) {
-        hess_accumulation[hess_offsets[nnz_idx]] += hess_values[nnz_idx];
+//        hess_accumulation[hess_offsets[nnz_idx]] += hess_values[nnz_idx];
         this->wspace_.hset[0].data[hess_offsets[nnz_idx]].Add(0, hess_values[nnz_idx]);
       }
 
     }
 
-    std::sort(grad_offsets.begin(), grad_offsets.end());
-    auto last = std::unique(grad_offsets.begin(), grad_offsets.end());
-    grad_offsets.erase(last, grad_offsets.end());
+//    std::sort(grad_offsets.begin(), grad_offsets.end());
+//    auto last = std::unique(grad_offsets.begin(), grad_offsets.end());
+//    grad_offsets.erase(last, grad_offsets.end());
 
-    LOG(INFO) << "Unique offsets: " << grad_offsets.size();
-    LOG(INFO) << "Elements in map: " << gradient_accumulation.size();
-
-    LOG(TRACKER) << mpi_rank << ": Non-zero grad vals: " << non_zero_grad_cnt << "/" << wspace_.hset[0].data.size() << ", "
-                 << non_zero_grad_cnt / (float) wspace_.hset[0].data.size() << "%";
+//    LOG(INFO) << "Unique offsets: " << grad_offsets.size();
+//    LOG(INFO) << "Elements in map: " << gradient_accumulation.size();
+//
+//    LOG(TRACKER) << mpi_rank << ": Non-zero grad vals: " << non_zero_grad_cnt << "/" << wspace_.hset[0].data.size() << ", "
+//                 << non_zero_grad_cnt / (float) wspace_.hset[0].data.size() << "%";
 //    LOG(TRACKER) << "Non-zero hess vals: " << non_zero_hess << "/" << wspace_.hset[0].data.size() << ", "
 //          << non_zero_hess / (float) wspace_.hset[0].data.size() << "%";
-    LOG(INFO) << "";
+
     // Perform the allreduce using rabit
 //    this->histred_.Allreduce(dmlc::BeginPtr(this->wspace_.hset[0].data),
 //                            this->wspace_.hset[0].data.size());
-    double allred_grad_sum = 0;
-    double allred_hess_sum = 0;
-    double allgath_grad_sum = 0;
-    double allgath_hess_sum = 0;
-    for (size_t i = 0; i < this->wspace_.hset[0].data.size(); ++i) {
-      const auto &grad_stats = wspace_.hset[0].data[i];
-//      LOG(INFO) << i << ": Allreduce Grad: " << grad_stats.sum_grad << ", hess: " << grad_stats.sum_hess;
-//      LOG(INFO) << i << ": Allgather Grad: " << gradient_accumulation[i] << ", hess: " << hess_accumulation[i];
-      allred_grad_sum += grad_stats.sum_grad;
-      allred_hess_sum += grad_stats.sum_hess;
-      allgath_grad_sum += gradient_accumulation[i];
-      allgath_hess_sum += hess_accumulation[i];
-      if (grad_stats.sum_grad != gradient_accumulation[i]) {
-        LOG(WARNING) << i << " : Allreduce Grad: " << grad_stats.sum_grad << ", Allgather Grad: " << gradient_accumulation[i];
-      }
-      if (grad_stats.sum_hess != hess_accumulation[i]) {
-        LOG(WARNING) << i << " : Allreduce hess: " << grad_stats.sum_hess << ", Allgather hess: " << hess_accumulation[i];
-      }
-    }
-    const double allgath_grad_sum_acc = std::accumulate(std::begin(gradient_accumulation), std::end(gradient_accumulation), 0,
-        [](float previous, const std::pair<const uint64_t, float>& p)
-        { return previous + p.second; });
-    const double allgath_hess_sum_acc = std::accumulate(std::begin(hess_accumulation), std::end(hess_accumulation), 0,
-                                                    [](float previous, const std::pair<const uint64_t, float>& p)
-                                                    { return previous + p.second; });
-    LOG(TRACKER) << mpi_rank << ": Grad sum from allreduce:" << allred_grad_sum;
-    LOG(TRACKER) << mpi_rank << ": Grad sum from allgather:" << allgath_grad_sum;
-    LOG(TRACKER) << mpi_rank << ": Hess sum from allreduce:" << allred_hess_sum;
-    LOG(TRACKER) << mpi_rank << ": Hess sum from allgather:" << allgath_hess_sum;
-//    LOG(TRACKER) << mpi_rank << ": Grad sum from allgather_acc:" << allgath_grad_sum_acc;
-//    LOG(TRACKER) << mpi_rank << ": Hess sum from allgather_acc:" << allgath_hess_sum_acc;
+//    double allred_grad_sum = 0;
+//    double allred_hess_sum = 0;
+//    double allgath_grad_sum = 0;
+//    double allgath_hess_sum = 0;
+//    for (size_t i = 0; i < this->wspace_.hset[0].data.size(); ++i) {
+//      const auto &grad_stats = wspace_.hset[0].data[i];
+////      LOG(INFO) << i << ": Allreduce Grad: " << grad_stats.sum_grad << ", hess: " << grad_stats.sum_hess;
+////      LOG(INFO) << i << ": Allgather Grad: " << gradient_accumulation[i] << ", hess: " << hess_accumulation[i];
+//      allred_grad_sum += grad_stats.sum_grad;
+//      allred_hess_sum += grad_stats.sum_hess;
+//      allgath_grad_sum += gradient_accumulation[i];
+//      allgath_hess_sum += hess_accumulation[i];
+//      if (grad_stats.sum_grad != gradient_accumulation[i]) {
+//        LOG(WARNING) << i << " : Allreduce Grad: " << grad_stats.sum_grad << ", Allgather Grad: " << gradient_accumulation[i];
+//      }
+//      if (grad_stats.sum_hess != hess_accumulation[i]) {
+//        LOG(WARNING) << i << " : Allreduce hess: " << grad_stats.sum_hess << ", Allgather hess: " << hess_accumulation[i];
+//      }
+//    }
+//    LOG(TRACKER) << mpi_rank << ": Grad sum from allreduce:" << allred_grad_sum;
+//    LOG(TRACKER) << mpi_rank << ": Grad sum from allgather:" << allgath_grad_sum;
+//    LOG(TRACKER) << mpi_rank << ": Hess sum from allreduce:" << allred_hess_sum;
+//    LOG(TRACKER) << mpi_rank << ": Hess sum from allgather:" << allgath_hess_sum;
+#else
+    LOG(INFO) << "Using dense communication";
+    // Perform the allreduce using rabit
+    this->histred_.Allreduce(dmlc::BeginPtr(this->wspace_.hset[0].data),
+                            this->wspace_.hset[0].data.size());
+#endif
   }
 
 

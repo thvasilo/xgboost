@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.3)
+cmake_minimum_required(VERSION 3.12)
 project(xgboost LANGUAGES CXX C VERSION 1.0.0)
 include(cmake/Utils.cmake)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
@@ -21,6 +21,8 @@ set(XGBOOST_DEFINITIONS
   -DXGBOOST_VER_PATCH=${xgboost_VERSION_PATCH})
 set_default_configuration_release()
 
+#-- Choose distributed communication method
+option(SPARSE_COMMUNICATION "Use sparse communication for distributed training." ON)
 #-- Options
 option(BUILD_C_DOC "Build documentation for C APIs using Doxygen." OFF)
 option(USE_OPENMP "Build with OpenMP support." ON)
@@ -135,7 +137,14 @@ target_include_directories(xgboost
   INTERFACE
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_PREFIX}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>)
+if(SPARSE_COMMUNICATION)
+    message(STATUS "Compiling with sparse communication")
+    target_compile_definitions(objxgboost PUBLIC SPARSE_COMMUNICATION)
+else ()
+    message(STATUS "Compiling with dense communication")
+endif()
 target_link_libraries(xgboost PRIVATE ${LINKED_LIBRARIES_PRIVATE})
+
 
 # This creates its own shared library `xgboost4j'.
 if (JVM_BINDINGS)
@@ -163,6 +172,8 @@ set_target_properties(
   CXX_STANDARD 11
   CXX_STANDARD_REQUIRED ON)
 #-- End CLI for xgboost
+
+
 
 set_output_directory(runxgboost ${PROJECT_SOURCE_DIR})
 set_output_directory(xgboost ${PROJECT_SOURCE_DIR}/lib)
