@@ -16,6 +16,10 @@ option(GOOGLE_TEST "Build google tests" OFF)
 option(R_LIB "Build shared library for R package" OFF)
 set(GPU_COMPUTE_VER "" CACHE STRING
   "Space separated list of compute versions to be built against, e.g. '35 61'")
+#-- Choose distributed communication method
+option(SPARSE_COMMUNICATION "Use sparse communication for distributed training." ON)
+
+include_directories(include)
 
 # Deprecation warning
 if(PLUGIN_UPDATER_GPU)
@@ -108,6 +112,16 @@ endif()
 add_subdirectory(dmlc-core)
 set(LINK_LIBRARIES dmlc rabit)
 
+# mpi
+find_package(MPI REQUIRED)
+if (MPI_FOUND)
+  include_directories(SYSTEM ${MPI_CXX_INCLUDE_PATH})
+else (MPI_FOUND)
+  message(SEND_ERROR "This application cannot compile without MPI")
+endif (MPI_FOUND)
+list(APPEND LINK_LIBRARIES ${MPI_CXX_LIBRARIES})
+
+
 
 if(USE_CUDA)
   find_package(CUDA 8.0 REQUIRED)
@@ -191,6 +205,12 @@ else()
 
   # Shared library
   add_library(xgboost SHARED $<TARGET_OBJECTS:objxgboost>)
+  if(SPARSE_COMMUNICATION)
+    message(STATUS "Compiling with sparse communication")
+    target_compile_definitions(objxgboost PUBLIC SPARSE_COMMUNICATION)
+  else ()
+    message(STATUS "Compiling with dense communication")
+  endif()
   target_link_libraries(xgboost ${LINK_LIBRARIES})
   set_output_directory(xgboost ${PROJECT_SOURCE_DIR}/lib)
   if(MINGW)

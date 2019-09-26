@@ -15,6 +15,7 @@
 #include <dmlc/timer.h>
 #include <iomanip>
 #include <ctime>
+#include <mpi.h>
 #include <string>
 #include <cstdio>
 #include <cstring>
@@ -344,6 +345,7 @@ int CLIRunTask(int argc, char *argv[]) {
     printf("Usage: <config>\n");
     return 0;
   }
+  MPI_Init(&argc, &argv);
   rabit::Init(argc, argv);
 
   std::vector<std::pair<std::string, std::string> > cfg;
@@ -369,6 +371,7 @@ int CLIRunTask(int argc, char *argv[]) {
     case kPredict: CLIPredict(param); break;
   }
   rabit::Finalize();
+  MPI_Finalize();
   return 0;
 }
 }  // namespace xgboost
