@@ -7,6 +7,7 @@
 #include <mpi.h>
 #include <mxx/collective.hpp>
 
+//#include <unistd.h>
 #include <xgboost/base.h>
 #include <xgboost/tree_updater.h>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "../common/quantile.h"
 #include "../common/group_data.h"
 #include "./updater_basemaker-inl.h"
+#include "../common/timer.h"
 
 #ifdef __JETBRAINS_IDE__
 // Stuff that only clion will see goes here
@@ -30,6 +32,11 @@ DMLC_REGISTRY_FILE_TAG(updater_histmaker);
 template<typename TStats>
 class HistMaker: public BaseMaker {
  public:
+  void Init(const std::vector<std::pair<std::string, std::string> >& args) override {
+    param_.InitAllowUnknown(args);
+    monitor_.Init("updater_hist_maker", param_.debug_verbose);
+  }
+
   void Update(HostDeviceVector<GradientPair> *gpair,
               DMatrix *p_fmat,
               const std::vector<RegTree*> &trees) override {
@@ -45,6 +52,9 @@ class HistMaker: public BaseMaker {
   }
 
  protected:
+  // monitor for time
+  common::Monitor monitor_;
+
   /*! \brief a single histogram */
   struct HistUnit {
     /*! \brief cutting point of histogram, contains maximum point */
@@ -698,6 +708,7 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
                   DMatrix *p_fmat,
                   const std::vector<bst_uint> &fset,
                   const RegTree &tree) override {
+    this->monitor_.Start("Computation");
     const MetaInfo &info = p_fmat->Info();
     // fill in reverse map
     this->feat2workindex_.resize(tree.param.num_feature);
@@ -751,9 +762,15 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
             .data[0] = this->node_stats_[nid];
       }
     }
+    this->monitor_.Stop("Computation");
+//    char hostname[1024];
+//    hostname[1023] = '\0';
+//    gethostname(hostname, 1023);
+//    LOG(TRACKER) << "Hostname: " << hostname;
 #ifdef SPARSE_COMMUNICATION
-    LOG(INFO) << "Using sparse communication";
+//    LOG(INFO) << "Using sparse communication";
     // tvas: For now let's try creating two sparse vectors, one for grads one for hess. We could concat the two later
+    this->monitor_.Start("Computation");
     size_t non_zero_grad_cnt = 0;
     size_t non_zero_hess_cnt = 0;
     std::vector<uint32_t> nonzero_grad_idx;
@@ -782,17 +799,20 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
       this->wspace_.hset[0].data[i].sum_hess = 0;
       this->wspace_.hset[0].data[i].sum_grad = 0;
     }
+    this->monitor_.Stop("Computation");
     // Allreduce the number of non-zero elements per worker
 //    std::vector<uint32_t > values_per_worker(mpi_size);
 //    values_per_worker[mpi_rank] = non_zero_grad_cnt;
 //    rabit::Allreduce<rabit::op::Sum>(dmlc::BeginPtr(values_per_worker), mpi_size);
 //    LOG(TRACKER) << "values_per_worker: " << values_per_worker;
     // Gather the gradient offsets and values from each worker
+    this->monitor_.Start("Communication");
     std::vector<uint32_t > grad_offsets = mxx::allgatherv(nonzero_grad_idx.data(), non_zero_grad_cnt);
     std::vector<double > grad_values = mxx::allgatherv(nonzero_grad_values.data(), non_zero_grad_cnt);
     // Gather the hessian offsets and values from each worker
     std::vector<uint32_t > hess_offsets = mxx::allgatherv(nonzero_hess_idx.data(), non_zero_hess_cnt);
     std::vector<double > hess_values = mxx::allgatherv(nonzero_hess_values.data(), non_zero_hess_cnt);
+    this->monitor_.Stop("Communication");
 //    size_t non_zero_all = std::accumulate(values_per_worker.begin(), values_per_worker.end(), 0ul);
 //    LOG(TRACKER) << mpi_rank << ": Total nnz values according to values_per_worker: " << non_zero_all;
 //    LOG(TRACKER) << mpi_rank << ": Total nnz values according to offsets.size(): " << grad_offsets.size();
@@ -800,6 +820,7 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
 //    std::unordered_map<uint64_t, double> gradient_accumulation;
 //    std::unordered_map<uint64_t, double> hess_accumulation;
 
+    this->monitor_.Start("Computation");
     // Iterate until the end of the larger of the two lists
     size_t max_index = grad_offsets.size() > hess_offsets.size() ? grad_offsets.size() : hess_offsets.size();
     for (size_t nnz_idx = 0; nnz_idx < max_index; ++nnz_idx) {
@@ -813,7 +834,7 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
       }
 
     }
-
+    this->monitor_.Stop("Computation");
 //    std::sort(grad_offsets.begin(), grad_offsets.end());
 //    auto last = std::unique(grad_offsets.begin(), grad_offsets.end());
 //    grad_offsets.erase(last, grad_offsets.end());
@@ -853,11 +874,15 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
 //    LOG(TRACKER) << mpi_rank << ": Hess sum from allreduce:" << allred_hess_sum;
 //    LOG(TRACKER) << mpi_rank << ": Hess sum from allgather:" << allgath_hess_sum;
 #else
-    LOG(INFO) << "Using dense communication";
+    // LOG(INFO) << "Using dense communication";
     // Perform the allreduce using rabit
+    this->monitor_.Start("Communication");
     this->histred_.Allreduce(dmlc::BeginPtr(this->wspace_.hset[0].data),
                             this->wspace_.hset[0].data.size());
+    this->monitor_.Stop("Communication");
 #endif
+    LOG(TRACKER) << rabit::GetRank() << ": Communication " << this->monitor_.timer_map["Communication"].ElapsedSeconds() << "s";
+    LOG(TRACKER) << rabit::GetRank() << ": Computation " << this->monitor_.timer_map["Computation"].ElapsedSeconds() << "s";
   }
 
   // cached unit pointer
@@ -866,132 +891,6 @@ class GlobalProposalHistMaker: public CQHistMaker<TStats> {
   std::vector<bst_float> cached_cut_;
 };
 
-
-template<typename TStats>
-class QuantileHistMaker: public HistMaker<TStats> {
- protected:
-  using WXQSketch = common::WXQuantileSketch<bst_float, bst_float>;
-  void ResetPosAndPropose(const std::vector<GradientPair> &gpair,
-                          DMatrix *p_fmat,
-                          const std::vector <bst_uint> &fset,
-                          const RegTree &tree) override {
-    const MetaInfo &info = p_fmat->Info();
-    // initialize the data structure
-    const int nthread = omp_get_max_threads();
-    sketchs_.resize(this->qexpand_.size() * tree.param.num_feature);
-    for (size_t i = 0; i < sketchs_.size(); ++i) {
-      sketchs_[i].Init(info.num_row_, this->param_.sketch_eps);
-    }
-    // start accumulating statistics
-    dmlc::DataIter<RowBatch> *iter = p_fmat->RowIterator();
-    iter->BeforeFirst();
-    while (iter->Next()) {
-      const RowBatch &batch = iter->Value();
-      // parallel convert to column major format
-      common::ParallelGroupBuilder<SparseBatch::Entry>
-          builder(&col_ptr_, &col_data_, &thread_col_ptr_);
-      builder.InitBudget(tree.param.num_feature, nthread);
-
-      const bst_omp_uint nbatch = static_cast<bst_omp_uint>(batch.size);
-      #pragma omp parallel for schedule(static)
-      for (bst_omp_uint i = 0; i < nbatch; ++i) {
-        RowBatch::Inst inst = batch[i];
-        const bst_uint ridx = static_cast<bst_uint>(batch.base_rowid + i);
-        int nid = this->position_[ridx];
-        if (nid >= 0) {
-          if (!tree[nid].IsLeaf()) {
-            this->position_[ridx] = nid = HistMaker<TStats>::NextLevel(inst, tree, nid);
-          }
-          if (this->node2workindex_[nid] < 0) {
-            this->position_[ridx] = ~nid;
-          } else {
-            for (bst_uint j = 0; j < inst.length; ++j) {
-              builder.AddBudget(inst[j].index, omp_get_thread_num());
-            }
-          }
-        }
-      }
-      builder.InitStorage();
-      #pragma omp parallel for schedule(static)
-      for (bst_omp_uint i = 0; i < nbatch; ++i) {
-        RowBatch::Inst inst = batch[i];
-        const bst_uint ridx = static_cast<bst_uint>(batch.base_rowid + i);
-        const int nid = this->position_[ridx];
-        if (nid >= 0) {
-          for (bst_uint j = 0; j < inst.length; ++j) {
-            builder.Push(inst[j].index,
-                         SparseBatch::Entry(nid, inst[j].fvalue),
-                         omp_get_thread_num());
-          }
-        }
-      }
-      // start putting things into sketch
-      const bst_omp_uint nfeat = col_ptr_.size() - 1;
-      #pragma omp parallel for schedule(dynamic, 1)
-      for (bst_omp_uint k = 0; k < nfeat; ++k) {
-        for (size_t i = col_ptr_[k]; i < col_ptr_[k+1]; ++i) {
-          const SparseBatch::Entry &e = col_data_[i];
-          const int wid = this->node2workindex_[e.index];
-          sketchs_[wid * tree.param.num_feature + k].Push(e.fvalue, gpair[e.index].GetHess());
-        }
-      }
-    }
-    // setup maximum size
-    unsigned max_size = this->param_.MaxSketchSize();
-    // synchronize sketch
-    summary_array_.resize(sketchs_.size());
-    for (size_t i = 0; i < sketchs_.size(); ++i) {
-      common::WQuantileSketch<bst_float, bst_float>::SummaryContainer out;
-      sketchs_[i].GetSummary(&out);
-      summary_array_[i].Reserve(max_size);
-      summary_array_[i].SetPrune(out, max_size);
-    }
-
-    size_t nbytes = WXQSketch::SummaryContainer::CalcMemCost(max_size);
-    sreducer_.Allreduce(dmlc::BeginPtr(summary_array_), nbytes, summary_array_.size());
-    // now we get the final result of sketch, setup the cut
-    this->wspace_.cut.clear();
-    this->wspace_.rptr.clear();
-    this->wspace_.rptr.push_back(0);
-    for (size_t wid = 0; wid < this->qexpand_.size(); ++wid) {
-      for (int fid = 0; fid < tree.param.num_feature; ++fid) {
-        const WXQSketch::Summary &a = summary_array_[wid * tree.param.num_feature + fid];
-        for (size_t i = 1; i < a.size; ++i) {
-          bst_float cpt = a.data[i].value - kRtEps;
-          if (i == 1 || cpt > this->wspace_.cut.back()) {
-            this->wspace_.cut.push_back(cpt);
-          }
-        }
-        // push a value that is greater than anything
-        if (a.size != 0) {
-          bst_float cpt = a.data[a.size - 1].value;
-          // this must be bigger than last value in a scale
-          bst_float last = cpt + fabs(cpt) + kRtEps;
-          this->wspace_.cut.push_back(last);
-        }
-        this->wspace_.rptr.push_back(this->wspace_.cut.size());
-      }
-      // reserve last value for global statistics
-      this->wspace_.cut.push_back(0.0f);
-      this->wspace_.rptr.push_back(this->wspace_.cut.size());
-    }
-    CHECK_EQ(this->wspace_.rptr.size(),
-             (tree.param.num_feature + 1) * this->qexpand_.size() + 1);
-  }
-
- private:
-  // summary array
-  std::vector<WXQSketch::SummaryContainer> summary_array_;
-  // reducer for summary
-  rabit::SerializeReducer<WXQSketch::SummaryContainer> sreducer_;
-  // local temp column data structure
-  std::vector<size_t> col_ptr_;
-  // local storage of column data
-  std::vector<SparseBatch::Entry> col_data_;
-  std::vector<std::vector<size_t> > thread_col_ptr_;
-  // per node, per feature sketch
-  std::vector<common::WQuantileSketch<bst_float, bst_float> > sketchs_;
-};
 
 XGBOOST_REGISTER_TREE_UPDATER(LocalHistMaker, "grow_local_histmaker")
 .describe("Tree constructor that uses approximate histogram construction.")

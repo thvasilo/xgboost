@@ -71,9 +71,17 @@ class TreePruner: public TreeUpdater {
       }
     }
     if (!param_.silent) {
-      LOG(INFO) << "tree pruning end, " << tree.param.num_roots << " roots, "
-                << tree.NumExtraNodes() << " extra nodes, " << npruned
-                << " pruned nodes, max_depth=" << tree.MaxDepth();
+      if (rabit::IsDistributed()) {
+        if (rabit::GetRank() == 0) {
+          LOG(TRACKER) << "tree pruning end, " << tree.param.num_roots << " roots, "
+                       << tree.NumExtraNodes() << " extra nodes, " << npruned
+                       << " pruned nodes, max_depth=" << tree.MaxDepth();
+        }
+      } else {
+        LOG(INFO) << "tree pruning end, " << tree.param.num_roots << " roots, "
+                  << tree.NumExtraNodes() << " extra nodes, " << npruned
+                  << " pruned nodes, max_depth=" << tree.MaxDepth();      }
+
     }
   }
 
