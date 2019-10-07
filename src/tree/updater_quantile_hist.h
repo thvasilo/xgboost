@@ -95,7 +95,9 @@ class QuantileHistMaker: public TreeUpdater {
                      std::unique_ptr<TreeUpdater> pruner,
                      std::unique_ptr<SplitEvaluator> spliteval)
       : param_(param), pruner_(std::move(pruner)), spliteval_(std::move(spliteval)),
-      p_last_tree_(nullptr), p_last_fmat_(nullptr) {  }
+      p_last_tree_(nullptr), p_last_fmat_(nullptr) {
+      monitor_.Init("QuantileHistmaker");
+    }
     // update one tree, growing
     virtual void Update(const GHistIndexMatrix& gmat,
                         const GHistIndexBlockMatrix& gmatb,
@@ -127,7 +129,7 @@ class QuantileHistMaker: public TreeUpdater {
     };
 
     struct TreeGrowingPerfMonitor {
-      enum timer_name {INIT_DATA, INIT_NEW_NODE, BUILD_HIST, EVALUATE_SPLIT, APPLY_SPLIT};
+      enum timer_name {INIT_DATA, INIT_NEW_NODE, BUILD_HIST, EVALUATE_SPLIT, APPLY_SPLIT, COMMUNICATION};
 
       double global_start;
 
@@ -138,6 +140,7 @@ class QuantileHistMaker: public TreeUpdater {
       double time_build_hist = 0;
       double time_evaluate_split = 0;
       double time_apply_split = 0;
+      double time_communication = 0;
 
       inline void StartPerfMonitor() {
         global_start = dmlc::GetTime();
@@ -146,7 +149,7 @@ class QuantileHistMaker: public TreeUpdater {
       inline void EndPerfMonitor() {
         CHECK_GT(global_start, 0);
         double total_time = dmlc::GetTime() - global_start;
-        LOG(INFO) << "\nInitData:          "
+        LOG(TRACKER) << "\nInitData:          "
                   << std::fixed << std::setw(6) << std::setprecision(4) << time_init_data
                   << " (" << std::fixed << std::setw(5) << std::setprecision(2)
                   << time_init_data / total_time * 100 << "%)\n"
@@ -158,6 +161,10 @@ class QuantileHistMaker: public TreeUpdater {
                   << std::fixed << std::setw(6) << std::setprecision(4) << time_build_hist
                   << " (" << std::fixed << std::setw(5) << std::setprecision(2)
                   << time_build_hist / total_time * 100 << "%)\n"
+                  << "BuildHist Communication:         "
+                  << std::fixed << std::setw(6) << std::setprecision(4) << time_communication
+                  << " (" << std::fixed << std::setw(5) << std::setprecision(2)
+                  << time_communication / time_build_hist * 100 << "% of BuildHist)\n"
                   << "EvaluateSplit:     "
                   << std::fixed << std::setw(6) << std::setprecision(4) << time_evaluate_split
                   << " (" << std::fixed << std::setw(5) << std::setprecision(2)
@@ -175,6 +182,7 @@ class QuantileHistMaker: public TreeUpdater {
         time_build_hist = 0;
         time_evaluate_split = 0;
         time_apply_split = 0;
+        time_communication = 0;
       }
 
       inline void TickStart() {
@@ -197,6 +205,9 @@ class QuantileHistMaker: public TreeUpdater {
             time_evaluate_split += dmlc::GetTime() - tstart;
             break;
           case APPLY_SPLIT:
+            time_apply_split += dmlc::GetTime() - tstart;
+            break;
+          case COMMUNICATION:
             time_apply_split += dmlc::GetTime() - tstart;
             break;
         }
@@ -360,6 +371,10 @@ class QuantileHistMaker: public TreeUpdater {
     // back pointers to tree and data matrix
     const RegTree* p_last_tree_;
     const DMatrix* p_last_fmat_;
+
+    // Performance monitor
+    common::Monitor monitor_;
+    common::Timer timer;
 
     using ExpandQueue =
        std::priority_queue<ExpandEntry, std::vector<ExpandEntry>,

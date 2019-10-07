@@ -607,28 +607,39 @@ void QuantileHistMaker::Builder::SyncHistograms(
     #pragma omp parallel for  // TODO(egorsmir): replace to n_features * nodes.size()
     for (int i = 0; i < size; ++i) {
       const int32_t nid = nodes[i].nid;
-      common::GradStatHist::GradType* hist_data =
+      auto* hist_data =
           reinterpret_cast<common::GradStatHist::GradType*>(hist_[nid].data());
 
       ReduceHistograms(hist_data, nullptr, nullptr, 0,  hist_builder_.GetNumBins() * 2, i,
           *hist_is_init, *hist_buffers);
     }
 
-    for (auto elem : nodes) {
-      size_t non_zero_grad = 0;
-      size_t non_zero_hess = 0;
-      for (const auto &grad_val : hist_[elem.nid]) {
-        if (grad_val.sum_grad > 0) {
-          non_zero_grad++;
-        }
-        if (grad_val.sum_hess > 0) {
-          non_zero_hess++;
-        }
-      }
-      LOG(INFO) << "Non-zero grad vals: " << non_zero_grad << "/" << hist_builder_.GetNumBins();
-      LOG(INFO) << "Non-zero hess vals: " << non_zero_hess << "/" << hist_builder_.GetNumBins();
-      this->histred_.Allreduce(hist_[elem.nid].data(), hist_builder_.GetNumBins());
+    std::vector<int> idx_to_nid(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+      idx_to_nid[i] = nodes[i].nid;
     }
+    this->timer.Start();
+    for (auto node : nodes) {
+
+//      size_t non_zero_grad = 0;
+//      size_t non_zero_hess = 0;
+//      for (const auto &grad_val : hist_[elem.nid]) {
+//        if (grad_val.sum_grad > 0) {
+//          non_zero_grad++;
+//        }
+//        if (grad_val.sum_hess > 0) {
+//          non_zero_hess++;
+//        }
+//      }
+//      LOG(TRACKER) << "Non-zero grad vals: " << non_zero_grad << "/" << hist_builder_.GetNumBins();
+//      LOG(TRACKER) << "Non-zero hess vals: " << non_zero_hess << "/" << hist_builder_.GetNumBins();
+      this->histred_.Allreduce(hist_[node.nid].data(), hist_builder_.GetNumBins());
+    }
+    this->timer.Stop();
+//    LOG(TRACKER) << "Communication step 1: " << timer.ElapsedSeconds();
+    perf_monitor.time_communication += timer.ElapsedSeconds();
+    timer.Reset();
+
 
     // TODO(egorsmir): add parallel for
     for (auto elem : nodes) {
@@ -641,23 +652,36 @@ void QuantileHistMaker::Builder::SyncHistograms(
 
   // merge grad stats
   {
+    std::vector<common::GradStatHist> grad_stat_per_node(nodes.size());
     for (size_t inode = 0; inode < nodes.size(); ++inode) {
       const int32_t nid = nodes[inode].nid;
 
       if (snode_.size() <= size_t(nid)) {
         snode_.resize(nid + 1, NodeEntry(param_));
+        grad_stat_per_node.resize(nid + 1);
       }
 
-      common::GradStatHist grad_stat;
       for (size_t ihist = 0; ihist < (*hist_is_init)[inode].size(); ++ihist) {
         if ((*hist_is_init)[inode][ihist]) {
-          grad_stat.Add(grad_stats[inode][ihist]);
+          grad_stat_per_node[nid].Add(grad_stats[inode][ihist]);
         }
       }
-      this->histred_.Allreduce(&grad_stat, 1);
-      snode_[nid].stats = grad_stat.ToGradStat();
 
-      const int32_t sibling_nid = nodes[inode].sibling_nid;
+    }
+
+    assert(grad_stat_per_node.size() == snode_.size());
+    this->monitor_.Start("Communication");
+    this->timer.Start();
+    this->histred_.Allreduce(grad_stat_per_node.data(), snode_.size());
+    this->timer.Stop();
+    this->monitor_.Stop("Communication");
+
+    for (const auto & node : nodes) {
+      const int32_t nid = node.nid;
+
+      snode_[nid].stats = grad_stat_per_node[nid].ToGradStat();
+
+      const int32_t sibling_nid = node.sibling_nid;
       if (sibling_nid > -1) {
         if (snode_.size() <= size_t(sibling_nid)) {
           snode_.resize(sibling_nid + 1, NodeEntry(param_));
@@ -666,6 +690,9 @@ void QuantileHistMaker::Builder::SyncHistograms(
         snode_[sibling_nid].stats.SetSubstract(snode_[parent_id].stats, snode_[nid].stats);
       }
     }
+    perf_monitor.time_communication += timer.ElapsedSeconds();
+//    LOG(TRACKER) << "Communication step 2: " << timer.ElapsedSeconds();
+    timer.Reset();
   }
 }
 
@@ -832,6 +859,7 @@ void QuantileHistMaker::Builder::Update(const GHistIndexMatrix& gmat,
 
   pruner_->Update(gpair, p_fmat, std::vector<RegTree*>{p_tree});
 
+  monitor_.Print(true);
   perf_monitor.EndPerfMonitor();
 }
 

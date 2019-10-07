@@ -74,29 +74,37 @@ void Monitor::PrintStatistics(StatMap const& statistics) const {
           "Timer for " << kv.first << " did not get stopped properly.";
       continue;
     }
-    std::cout << kv.first << ": " << static_cast<double>(kv.second.second) / 1e+6
+    LOG(TRACKER) << kv.first << ": " << static_cast<double>(kv.second.second) / 1e+6
               << "s, " << kv.second.first << " calls @ "
               << kv.second.second
               << "us" << std::endl;
   }
 }
 
-void Monitor::Print() const {
-  if (!ConsoleLogger::ShouldLog(ConsoleLogger::LV::kDebug)) { return; }
+void Monitor::Print(bool force) const {
+  if (!ConsoleLogger::ShouldLog(ConsoleLogger::LV::kDebug) && !force) { return; }
 
   bool is_distributed = rabit::IsDistributed();
 
   if (is_distributed) {
-    auto world = this->CollectFromOtherRanks();
+//    auto world = this->CollectFromOtherRanks();
     // rank zero is in charge of printing
     if (rabit::GetRank() == 0) {
       LOG(CONSOLE) << "======== Monitor: " << label << " ========";
-      for (size_t i = 0; i < world.size(); ++i) {
-        std::cout << "From rank: " << i << ": " << std::endl;
-        auto const& statistic = world[i];
-        this->PrintStatistics(statistic);
-        std::cout << std::endl;
+//      for (size_t i = 0; i < world.size(); ++i) {
+//        std::cout << "From rank: " << i << ": " << std::endl;
+//        auto const& statistic = world[i];
+//        this->PrintStatistics(statistic);
+//        std::cout << std::endl;
+//      }
+      StatMap stat_map;
+      for (auto const& kv : statistics_map) {
+        stat_map[kv.first] = std::make_pair(
+            kv.second.count, std::chrono::duration_cast<std::chrono::microseconds>(
+                kv.second.timer.elapsed).count());
       }
+      LOG(CONSOLE) << "======== Monitor: " << label << " ========";
+      this->PrintStatistics(stat_map);
     }
   } else {
     StatMap stat_map;

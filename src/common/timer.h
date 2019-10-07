@@ -81,7 +81,7 @@ struct Monitor {
   }
 
   /*! \brief Print all the statistics. */
-  void Print() const;
+  void Print(bool force = false) const;
 
   void Init(std::string label) { this->label = label; }
   void Start(const std::string &name) {
